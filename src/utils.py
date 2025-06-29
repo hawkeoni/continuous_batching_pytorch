@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 def get_model_and_tokenizer(model_name: str):
     logger.info("Start loading the model & tokenizer")
-    model_name = "Qwen/Qwen3-1.7B"
     model = (
         AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -27,7 +26,7 @@ def get_model_and_tokenizer(model_name: str):
     return model, tokenizer
 
 
-def get_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]:
+def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]:
     dataset = load_dataset("tatsu-lab/alpaca", split=f"train[:{dataset_size}]")
     texts = []
     for sample in dataset:
