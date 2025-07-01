@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import List
 
 import torch
@@ -17,7 +16,7 @@ def get_model_and_tokenizer(model_name: str):
             torch_dtype=torch.float16,
         )
         .eval()
-        .cuda()
+        .to(get_device())
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
     tokenizer.pad_token = tokenizer.eos_token
@@ -33,9 +32,23 @@ def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]
         messages = [
             {"role": "user", "content": sample["instruction"] + " " + sample["input"]}
         ]
-        texts.append(
-            tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+        if tokenizer.chat_template is None:
+            texts.append(sample["instruction"] + " " + sample["input"] + "Answer:\n")
+        else:
+            texts.append(
+                tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
             )
-        )
     return texts
+
+
+_DEVICE = None
+
+
+def get_device():
+    global _DEVICE
+    if _DEVICE is not None:
+        return _DEVICE
+    _DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    return _DEVICE

@@ -4,5 +4,5 @@
     "batch_size": 3,
     "max_prefix_len": 512,
     "max_new_tokens": 3,
-    "dataset_size": 100
+    "dataset_size": 15
 }

@@ -10,7 +10,7 @@ from tqdm import tqdm
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 from .config import BenchmarkConfig
-from .utils import get_model_and_tokenizer
+from .utils import get_device, get_model_and_tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,6 @@ class Stats(BaseModel):
 
 
 class Batcher:
-
     def __init__(
         self,
         config: BenchmarkConfig,
@@ -55,7 +54,6 @@ class Batcher:
 
 
 class SynchronousBatcher(Batcher):
-
     @torch.no_grad()
     def __call__(self, texts: List[str]) -> List[str]:
         self.stats.start_time = time.time()
@@ -73,8 +71,9 @@ class SynchronousBatcher(Batcher):
                 return_tensors="pt",
                 padding=True,
                 max_length=self.config.max_prefix_len,
+                truncation="longest_first",
             )
-            inputs = inputs.to(torch.device("cuda"))
+            inputs = inputs.to(get_device())
             self.stats.prefill_tokens += inputs["attention_mask"].sum().item()
             prefix_len = inputs["input_ids"].size(1)
             gens = self.model.generate(
@@ -87,7 +86,8 @@ class SynchronousBatcher(Batcher):
             generated_ids = gens[:, prefix_len:].cpu()
             self.stats.sample_end_times += [time.time()] * len(batch)
             generated_ids_global.append(generated_ids)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.stats.end_time = time.time()
         generated_texts = []
         for generated_ids in generated_ids_global:
@@ -98,8 +98,7 @@ class SynchronousBatcher(Batcher):
         return generated_texts
 
 
-class continuousBatcher:
-
+class ContinuousBatcher:
     @dataclass
     class _Batch:
         texts_decoding: List[str]
@@ -111,7 +110,6 @@ class continuousBatcher:
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
         generated_tokens_counter: Optional[torch.LongTensor] = None
         start_times: Optional[List[float]] = None
-
 
     def _update_prefill(self, batch: _Batch):
         inputs = self.tokenizer(
@@ -272,7 +270,7 @@ class continuousBatcher:
         generated_tokens = 0
         latencies = []
         results = []
-        batch = continuousBatcher._Batch(
+        batch = ContinuousBatcher._Batch(
             texts_decoding=[], texts_waiting=dataset[:BATCH_SIZE]
         )
         while idx < len(dataset) or batch.texts_decoding or batch.texts_waiting:

@@ -4,9 +4,9 @@ import time
 from argparse import ArgumentParser
 from pathlib import Path
 
-from src.batcher import continuousBatcher, SynchronousBatcher
+from src.batcher import ContinuousBatcher, SynchronousBatcher
 from src.config import BenchmarkConfig
-from src.utils import get_dataset
+from src.utils import get_alpaca_dataset
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -15,17 +15,17 @@ logging.basicConfig(level=logging.INFO)
 def main(config_path: Path, output: Path):
     config = BenchmarkConfig.model_validate_json(config_path.read_text())
     if config.continuous_batching:
-        batcher = continuousBatcher(config)
+        batcher = ContinuousBatcher(config)
     else:
         batcher = SynchronousBatcher(config)
 
-    dataset = get_dataset(config.dataset_size, batcher.tokenizer)
+    dataset = get_alpaca_dataset(config.dataset_size, batcher.tokenizer)
     generations = batcher(dataset)
 
-    stats = batcher.stats.model_dump_json()
+    stats = json.loads(batcher.stats.model_dump_json())
     if output is not None:
         stats["generations"] = generations
-        output.write_text(json.dumps(batcher.stats))
+        output.write_text(json.dumps(stats))
     batcher.stats.print()
 
 
