@@ -98,7 +98,7 @@ class SynchronousBatcher(Batcher):
         return generated_texts
 
 
-class ContinousBatcher:
+class continuousBatcher:
 
     @dataclass
     class _Batch:
@@ -272,7 +272,7 @@ class ContinousBatcher:
         generated_tokens = 0
         latencies = []
         results = []
-        batch = ContinousBatcher._Batch(
+        batch = continuousBatcher._Batch(
             texts_decoding=[], texts_waiting=dataset[:BATCH_SIZE]
         )
         while idx < len(dataset) or batch.texts_decoding or batch.texts_waiting:

@@ -4,7 +4,7 @@ import time
 from argparse import ArgumentParser
 from pathlib import Path
 
-from src.batcher import ContinousBatcher, SynchronousBatcher
+from src.batcher import continuousBatcher, SynchronousBatcher
 from src.config import BenchmarkConfig
 from src.utils import get_dataset
 
@@ -14,8 +14,8 @@ logging.basicConfig(level=logging.INFO)
 
 def main(config_path: Path, output: Path):
     config = BenchmarkConfig.model_validate_json(config_path.read_text())
-    if config.continous_batching:
-        batcher = ContinousBatcher(config)
+    if config.continuous_batching:
+        batcher = continuousBatcher(config)
     else:
         batcher = SynchronousBatcher(config)
 
