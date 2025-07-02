@@ -8,3 +8,4 @@ class BenchmarkConfig(BaseModel):
     max_prefix_len: int
     max_new_tokens: int
     dataset_size: int
+    fraction: float

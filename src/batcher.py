@@ -98,9 +98,10 @@ class SynchronousBatcher(Batcher):
         return generated_texts
 
 
-class ContinuousBatcher:
+class ContinuousBatcher(Batcher):
     @dataclass
     class _Batch:
+        text_ids: List[int]
         texts_decoding: List[str]
         texts_waiting: List[str]
         input_ids: Optional[torch.LongTensor] = None
@@ -111,23 +112,60 @@ class ContinuousBatcher:
         generated_tokens_counter: Optional[torch.LongTensor] = None
         start_times: Optional[List[float]] = None
 
+
+    def __call__(self, texts: List[str]):
+        self.stats.start_time = time.time()
+        self.stats.sample_start_times = [None] * len(texts)
+        self.stats.sample_end_times = [None] * len(texts)
+        results = [None] * len(texts)
+        batch_size = self.config.batch_size
+        idx = batch_size
+        latencies = []
+        batch = ContinuousBatcher._Batch(
+            text_ids=list(range(idx)), texts_decoding=[], texts_waiting=texts[:batch_size]
+        )
+        pbar = tqdm(total=len(texts), mininterval=1)
+        while idx < len(texts) or batch.texts_decoding or batch.texts_waiting:
+            if (
+                len(batch.texts_waiting) >= batch_size * self.config.fraction
+                or len(batch.texts_decoding) == 0
+            ):
+                self._update_prefill(batch)
+            self._step(batch)
+            text_ids, finished_samples = self._get_finished_samples(batch)
+            if finished_samples:
+                for tid, fs in zip(text_ids, finished_samples):
+                    results[tid] = fs
+                batch.texts_waiting += texts[idx : idx + len(finished_samples)]
+                batch.text_ids += list(range(idx, idx + len(finished_samples)))
+                idx += len(finished_samples)
+                pbar.update(len(finished_samples))
+
+        self.stats.end_time = time.time()
+        return results
+
     def _update_prefill(self, batch: _Batch):
+        start_time = time.time()
+        for i in range(len(batch.texts_decoding), len(batch.texts_decoding) + len(batch.texts_waiting)):
+            self.stats.sample_start_times[batch.text_ids[i]] = start_time
         inputs = self.tokenizer(
             batch.texts_waiting,
             return_tensors="pt",
-            padding="max_length",
-            max_length=MAX_PREFIX_LENGTH,
+            padding=True,
+            max_length=self.config.max_prefix_len,
+            truncation="longest_first",
         )
-        inputs = _move_to_device(inputs)
         attention_mask = inputs["attention_mask"]
+        self.stats.prefill_tokens += inputs["attention_mask"].sum().item()
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
         inputs["position_ids"] = position_ids
         prefill_data: CausalLMOutputWithCrossAttentions = self.model(
             **inputs, use_cache=True
         )
+        self.stats.generated_tokens += attention_mask.size(0)
 
-        self._prefill_tokens += attention_mask.sum().item()
+        # self._prefill_tokens += attention_mask.sum().item()
 
         if not batch.texts_decoding:
             attention_mask = torch.cat(
@@ -205,6 +243,7 @@ class ContinuousBatcher:
             past_key_values=batch.past_key_values,
             use_cache=True,
         )
+        self.stats.generated_tokens += step_data.logits.size(0)
         batch.input_ids = step_data.logits[:, 0].argmax(dim=1, keepdim=True)
         batch.past_key_values = step_data.past_key_values
 
@@ -225,14 +264,14 @@ class ContinuousBatcher:
         finished = (
             (
                 (batch.input_ids == self.tokenizer.eos_token_id)
-                | (batch.generated_tokens_counter.unsqueeze(1) >= MAX_NEW_TOKENS)
+                | (batch.generated_tokens_counter.unsqueeze(1) >= self.config.max_new_tokens)
             )
             .view(-1)
             .long()
         )
         finished_indices = finished.nonzero().view(-1).tolist()
         if not finished_indices:
-            return []
+            return [], []
         mask = torch.ones_like(batch.input_ids, dtype=bool).view(-1)
         mask[finished_indices] = False
         include_indices = torch.arange(batch.input_ids.size(0)).to(mask.device)[mask]
@@ -257,36 +296,14 @@ class ContinuousBatcher:
 
         # parse text results
         result = []
+        text_ids = []
+        end_time = time.time()
         for remove_index in sorted(finished_indices, reverse=True):
+            self.stats.sample_end_times[batch.text_ids[remove_index]] = end_time
             prefix = batch.texts_decoding.pop(remove_index)
+            text_ids.append(batch.text_ids.pop(remove_index))
             suffix = self.tokenizer.decode(batch.generated_tokens.pop(remove_index))
             result.append({"prefix": prefix, "generation": suffix})
 
-        return result
+        return text_ids, result
 
-    def process(self, dataset: List[str]):
-        idx = BATCH_SIZE
-        prefill_tokens = 0
-        generated_tokens = 0
-        latencies = []
-        results = []
-        batch = ContinuousBatcher._Batch(
-            texts_decoding=[], texts_waiting=dataset[:BATCH_SIZE]
-        )
-        while idx < len(dataset) or batch.texts_decoding or batch.texts_waiting:
-            if (
-                len(batch.texts_waiting) >= BATCH_SIZE // 2
-                or len(batch.texts_decoding) == 0
-            ):
-                self._update_prefill(batch)
-            self._step(batch)
-            self._generated_tokens += len(batch.texts_decoding)
-            finished_samples = self._get_finished_samples(batch)
-            if finished_samples:
-                results += finished_samples
-                latencies += [time.time()] * len(finished_samples)
-                batch.start_times += [time.time()] * len(finished_samples)
-                batch.texts_waiting += dataset[idx : idx + len(finished_samples)]
-                idx += len(finished_samples)
-
-        return results, latencies

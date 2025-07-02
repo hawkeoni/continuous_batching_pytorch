@@ -1,9 +1,9 @@
 {
     "model": "openai-community/gpt2",
-    "continuous_batching": false,
+    "continuous_batching": true,
     "batch_size": 3,
     "max_prefix_len": 512,
     "max_new_tokens": 3,
     "dataset_size": 15,
-    "fraction": 0.0
+    "fraction": 0.5
 }

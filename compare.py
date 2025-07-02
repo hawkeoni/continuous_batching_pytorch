@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 
@@ -11,12 +12,13 @@ def main():
         return
     wrong = 0
     correct = 0
+    with open(sys.argv[1]) as sync_fin, open(sys.argv[2]) as cont_fin:
+        sync_results = json.load(sync_fin)
+        cont_results = json.load(cont_fin)
+
     for s, c in zip(sync_results, cont_results):
         assert s["prefix"] == c["prefix"]
         if s["generation"] != c["generation"]:
-            # print(f"""`{s["generation"]}`""")
-            # print(f"""`{c["generation"]}`""")
-            # print("------")
             wrong += 1
         else:
             correct += 1
