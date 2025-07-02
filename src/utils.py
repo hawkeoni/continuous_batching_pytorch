@@ -37,15 +37,12 @@ def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]
         else:
             texts.append(
                 tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
                 )
             )
     return texts
 
-
 _DEVICE = None
-
-
 def get_device():
     global _DEVICE
     if _DEVICE is not None:

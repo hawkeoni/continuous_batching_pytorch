@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 import torch
 from pydantic import BaseModel
 from tqdm import tqdm
+from transformers import DynamicCache
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 from .config import BenchmarkConfig
@@ -111,18 +112,19 @@ class ContinuousBatcher(Batcher):
         generated_tokens: Optional[List[List[int]]] = None
         position_ids: Optional[torch.LongTensor] = None
         attention_mask: Optional[torch.LongTensor] = None
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
+        past_key_values: Optional[DynamicCache] = None
         generated_tokens_counter: Optional[torch.LongTensor] = None
         start_times: Optional[List[float]] = None
 
+    @torch.no_grad()
     def __call__(self, texts: List[str]):
+        assert self.config.fraction > 0.0
         self.stats.start_time = time.time()
         self.stats.sample_start_times = [None] * len(texts)
         self.stats.sample_end_times = [None] * len(texts)
         results = [None] * len(texts)
         batch_size = self.config.batch_size
         idx = batch_size
-        latencies = []
         batch = ContinuousBatcher._Batch(
             text_ids=list(range(idx)),
             texts_decoding=[],
@@ -131,6 +133,7 @@ class ContinuousBatcher(Batcher):
         pbar = tqdm(total=len(texts), mininterval=1)
         while idx < len(texts) or batch.texts_decoding or batch.texts_waiting:
             if (
+                # len(batch.texts)
                 len(batch.texts_waiting) >= batch_size * self.config.fraction
                 or len(batch.texts_decoding) == 0
             ):
@@ -252,7 +255,6 @@ class ContinuousBatcher(Batcher):
         )
         self.stats.generated_tokens += step_data.logits.size(0)
         batch.input_ids = step_data.logits[:, 0].argmax(dim=1, keepdim=True)
-        batch.past_key_values = step_data.past_key_values
 
         attention_mask = torch.cat(
             (batch.attention_mask, torch.ones_like(batch.attention_mask[:, 0:1])), dim=1
@@ -289,30 +291,21 @@ class ContinuousBatcher(Batcher):
         batch.input_ids = batch.input_ids.index_select(0, include_indices)
         batch.position_ids = batch.position_ids.index_select(0, include_indices)
         batch.attention_mask = batch.attention_mask.index_select(0, include_indices)
-        new_past_key_values = []
-        for layer in range(len(batch.past_key_values)):
-            layer_kv = []
-            for key_value_idx in range(2):
-                layer_kv.append(
-                    batch.past_key_values[layer][key_value_idx].index_select(
-                        0, include_indices
-                    )
-                )
-            new_past_key_values.append(tuple(layer_kv))
-        batch.past_key_values = tuple(new_past_key_values)
+        for layer in range(self.model.config.num_hidden_layers):
+            batch.past_key_values.key_cache[layer] = batch.past_key_values.key_cache[layer].index_select(0, include_indices)
+            batch.past_key_values.value_cache[layer] = batch.past_key_values.value_cache[layer].index_select(0, include_indices)
+
         batch.generated_tokens_counter = batch.generated_tokens_counter.index_select(
             0, include_indices
         )
-
         # parse text results
         result = []
         text_ids = []
         end_time = time.time()
         for remove_index in sorted(finished_indices, reverse=True):
             self.stats.sample_end_times[batch.text_ids[remove_index]] = end_time
-            prefix = batch.texts_decoding.pop(remove_index)
             text_ids.append(batch.text_ids.pop(remove_index))
             suffix = self.tokenizer.decode(batch.generated_tokens.pop(remove_index))
-            result.append({"prefix": prefix, "generation": suffix})
+            result.append(suffix)
 
         return text_ids, result
