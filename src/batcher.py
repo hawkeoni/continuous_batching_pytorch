@@ -23,16 +23,19 @@ class Stats(BaseModel):
     prefill_tokens: int = 0
     generated_tokens: int = 0
 
+    @property
+    def run_time(self):
+        return self.end_time - self.start_time
+
     def print(self):
-        run_time = self.end_time - self.start_time
         assert len(self.sample_start_times) == len(self.sample_end_times)
         n = len(self.sample_start_times)
         print(
             dedent(
                 f"""
-                Run time: {round(run_time, 2)}
-                Prefill tokens: {self.prefill_tokens} tok, {self.prefill_tokens / run_time} tok/s
-                Generated tokens: {self.generated_tokens} tok, {self.generated_tokens / run_time} tok/s
+                Run time: {round(self.run_time, 2)}
+                Prefill tokens: {self.prefill_tokens} tok, {self.prefill_tokens / self.run_time} tok/s
+                Generated tokens: {self.generated_tokens} tok, {self.generated_tokens / self.run_time} tok/s
                 Per sample latency from global start: {sum(self.sample_end_times) / n - self.start_time} s
                 Per sample latency from sample start: {sum([e - s for e, s in zip(self.sample_end_times, self.sample_start_times)]) / n}
                 """
@@ -112,7 +115,6 @@ class ContinuousBatcher(Batcher):
         generated_tokens_counter: Optional[torch.LongTensor] = None
         start_times: Optional[List[float]] = None
 
-
     def __call__(self, texts: List[str]):
         self.stats.start_time = time.time()
         self.stats.sample_start_times = [None] * len(texts)
@@ -122,7 +124,9 @@ class ContinuousBatcher(Batcher):
         idx = batch_size
         latencies = []
         batch = ContinuousBatcher._Batch(
-            text_ids=list(range(idx)), texts_decoding=[], texts_waiting=texts[:batch_size]
+            text_ids=list(range(idx)),
+            texts_decoding=[],
+            texts_waiting=texts[:batch_size],
         )
         pbar = tqdm(total=len(texts), mininterval=1)
         while idx < len(texts) or batch.texts_decoding or batch.texts_waiting:
@@ -146,7 +150,10 @@ class ContinuousBatcher(Batcher):
 
     def _update_prefill(self, batch: _Batch):
         start_time = time.time()
-        for i in range(len(batch.texts_decoding), len(batch.texts_decoding) + len(batch.texts_waiting)):
+        for i in range(
+            len(batch.texts_decoding),
+            len(batch.texts_decoding) + len(batch.texts_waiting),
+        ):
             self.stats.sample_start_times[batch.text_ids[i]] = start_time
         inputs = self.tokenizer(
             batch.texts_waiting,
@@ -264,7 +271,10 @@ class ContinuousBatcher(Batcher):
         finished = (
             (
                 (batch.input_ids == self.tokenizer.eos_token_id)
-                | (batch.generated_tokens_counter.unsqueeze(1) >= self.config.max_new_tokens)
+                | (
+                    batch.generated_tokens_counter.unsqueeze(1)
+                    >= self.config.max_new_tokens
+                )
             )
             .view(-1)
             .long()
@@ -306,4 +316,3 @@ class ContinuousBatcher(Batcher):
             result.append({"prefix": prefix, "generation": suffix})
 
         return text_ids, result
-
