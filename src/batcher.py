@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict
 
 import torch
 from pydantic import BaseModel
@@ -133,9 +133,8 @@ class ContinuousBatcher(Batcher):
         pbar = tqdm(total=len(texts), mininterval=1)
         while idx < len(texts) or batch.texts_decoding or batch.texts_waiting:
             if (
-                # len(batch.texts)
-                len(batch.texts_waiting) >= batch_size * self.config.fraction
-                or len(batch.texts_decoding) == 0
+                len(batch.texts_decoding) < batch_size and 
+                len(batch.texts_waiting) >= len(batch.texts_decoding) * self.config.fraction
             ):
                 self._update_prefill(batch)
             self._step(batch)
@@ -197,14 +196,15 @@ class ContinuousBatcher(Batcher):
             )
             batch.generated_tokens = input_ids.tolist()
         else:
-            self._expand_batch(batch, prefill_data)
+            self._expand_batch(batch, prefill_data, inputs)
 
     def _expand_batch(
-        self, batch: _Batch, prefill_data: CausalLMOutputWithCrossAttentions
+        self, batch: _Batch, prefill_data: CausalLMOutputWithCrossAttentions, inputs: Dict[str, torch.Tensor]
     ):
         batch.texts_decoding += batch.texts_waiting
         batch.texts_waiting = []
 
+        seqlen_to_add = batch.past_key_values.key_cache[0].size(2) - prefill_data.past_key_values.key_cache[0].size(2)
         input_ids = prefill_data.logits[:, -1].argmax(dim=1, keepdim=True)
         batch.input_ids = torch.cat((batch.input_ids, input_ids), dim=0)
         batch.generated_tokens += input_ids.tolist()
@@ -224,26 +224,47 @@ class ContinuousBatcher(Batcher):
 
         new_past_key_values = []
         # batch, n_heads, seq_len, d_head
-        seqlen_to_add = batch.past_key_values[0][0].size(
-            2
-        ) - prefill_data.past_key_values.size(2)
-        pkv = prefill_data.past_key_values
+        pkv = prefill_data.past_key_values.key_cache[0]
         padding_tensor = torch.zeros(
             pkv.size(0), pkv.size(1), seqlen_to_add, pkv.size(3)
         )
-        for layer in range(len(batch.past_key_values)):
-            layer_kv = []
-            for key_value_idx in range(2):
-                padded_tensor = torch.cat(
-                    (padding_tensor, prefill_data.past_key_values), dim=2
-                )
-                new_kv = torch.cat(
-                    (batch.past_key_values[layer][key_value_idx], padded_tensor)
-                )
-                layer_kv.append(new_kv)
-            new_past_key_values.append(tuple(layer_kv))
 
-        batch.past_key_values = tuple(new_past_key_values)
+        for layer in range(self.model.config.num_hidden_layers):
+            # key
+            padded_tensor = torch.cat(
+                (padding_tensor, prefill_data.past_key_values.key_cache[layer]),
+                dim=2
+            )
+            batch.past_key_values.key_cache[layer] = torch.cat(
+                (batch.past_key_values.key_cache[layer], padded_tensor),
+                dim=0
+            )
+
+            # value
+            padded_tensor = torch.cat(
+                (padding_tensor, prefill_data.past_key_values.value_cache[layer]),
+                dim=2
+            )
+            batch.past_key_values.value_cache[layer] = torch.cat(
+                (batch.past_key_values.value_cache[layer], padded_tensor),
+                dim=0
+            )
+
+
+
+        # for layer in range(len(batch.past_key_values)):
+        #     layer_kv = []
+        #     for key_value_idx in range(2):
+        #         padded_tensor = torch.cat(
+        #             (padding_tensor, prefill_data.past_key_values), dim=2
+        #         )
+        #         new_kv = torch.cat(
+        #             (batch.past_key_values[layer][key_value_idx], padded_tensor)
+        #         )
+        #         layer_kv.append(new_kv)
+        #     new_past_key_values.append(tuple(layer_kv))
+
+        # batch.past_key_values = tuple(new_past_key_values)
 
     def _step(self, batch: _Batch):
         step_data: CausalLMOutputWithCrossAttentions = self.model(
@@ -304,6 +325,7 @@ class ContinuousBatcher(Batcher):
         end_time = time.time()
         for remove_index in sorted(finished_indices, reverse=True):
             self.stats.sample_end_times[batch.text_ids[remove_index]] = end_time
+            batch.texts_decoding.pop(remove_index)
             text_ids.append(batch.text_ids.pop(remove_index))
             suffix = self.tokenizer.decode(batch.generated_tokens.pop(remove_index))
             result.append(suffix)
