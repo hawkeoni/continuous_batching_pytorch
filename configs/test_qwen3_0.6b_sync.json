@@ -1,0 +1,9 @@
+{
+    "model": "Qwen/Qwen3-0.6B",
+    "continuous_batching": false,
+    "batch_size": 2,
+    "max_prefix_len": 512,
+    "max_new_tokens": 64,
+    "dataset_size": 15,
+    "fraction": 0.0
+}
