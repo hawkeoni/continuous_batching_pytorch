@@ -52,6 +52,7 @@ class Batcher:
         self.model, self.tokenizer = get_model_and_tokenizer(config.model)
         self.config = config
         self.stats = Stats()
+        self.dtype = next(self.model.parameters()).dtype
 
     def __call__(self, texts: List[str]):
         raise NotImplementedError()
@@ -114,7 +115,6 @@ class ContinuousBatcher(Batcher):
         attention_mask: Optional[torch.LongTensor] = None
         past_key_values: Optional[DynamicCache] = None
         generated_tokens_counter: Optional[torch.LongTensor] = None
-        start_times: Optional[List[float]] = None
 
     @torch.no_grad()
     def __call__(self, texts: List[str]):
@@ -174,8 +174,6 @@ class ContinuousBatcher(Batcher):
         )
         self.stats.generated_tokens += attention_mask.size(0)
 
-        # self._prefill_tokens += attention_mask.sum().item()
-
         if not batch.texts_decoding:
             attention_mask = torch.cat(
                 (attention_mask, torch.ones_like(attention_mask[:, 0:1])), dim=1
@@ -185,7 +183,6 @@ class ContinuousBatcher(Batcher):
 
             batch.texts_decoding = batch.texts_waiting
             batch.texts_waiting = []
-            batch.start_times = [time.time()] * len(batch.texts_decoding)
             input_ids = prefill_data.logits[:, -1].argmax(dim=1, keepdim=True)
             batch.input_ids = input_ids
             batch.past_key_values = prefill_data.past_key_values
@@ -213,20 +210,20 @@ class ContinuousBatcher(Batcher):
             (batch.generated_tokens_counter, generated_tokens_counter), dim=0
         )
 
+        batch_seqlen = batch.attention_mask.size(1)
+        inputs_seqlen = inputs["input_ids"].size(1)
+        input_paddings = torch.zeros((inputs["input_ids"].size(0), batch_seqlen - inputs_seqlen), device=get_device())
+        input_attn_mask = torch.cat((input_paddings, inputs["attention_mask"]), dim=1)
+        batch.attention_mask = torch.cat((batch.attention_mask, input_attn_mask), dim=0)
         attention_mask = batch.attention_mask
-        attention_mask = torch.cat(
-            (attention_mask, torch.ones_like(attention_mask[:, 0:1])), dim=1
-        )
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
         batch.position_ids = position_ids[:, -1].unsqueeze(1)
-        batch.attention_mask = attention_mask
 
-        new_past_key_values = []
         # batch, n_heads, seq_len, d_head
         pkv = prefill_data.past_key_values.key_cache[0]
         padding_tensor = torch.zeros(
-            pkv.size(0), pkv.size(1), seqlen_to_add, pkv.size(3)
+            pkv.size(0), pkv.size(1), seqlen_to_add, pkv.size(3), dtype=self.dtype, device=get_device()
         )
 
         for layer in range(self.model.config.num_hidden_layers):
@@ -249,22 +246,6 @@ class ContinuousBatcher(Batcher):
                 (batch.past_key_values.value_cache[layer], padded_tensor),
                 dim=0
             )
-
-
-
-        # for layer in range(len(batch.past_key_values)):
-        #     layer_kv = []
-        #     for key_value_idx in range(2):
-        #         padded_tensor = torch.cat(
-        #             (padding_tensor, prefill_data.past_key_values), dim=2
-        #         )
-        #         new_kv = torch.cat(
-        #             (batch.past_key_values[layer][key_value_idx], padded_tensor)
-        #         )
-        #         layer_kv.append(new_kv)
-        #     new_past_key_values.append(tuple(layer_kv))
-
-        # batch.past_key_values = tuple(new_past_key_values)
 
     def _step(self, batch: _Batch):
         step_data: CausalLMOutputWithCrossAttentions = self.model(
