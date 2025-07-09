@@ -1,8 +1,10 @@
 import random
 import logging
 from typing import List
+from contextlib import nullcontext, contextmanager
 
 import torch
+from torch.profiler import profile, ProfilerActivity
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -55,11 +57,12 @@ def get_mmlu_dataset(dataset_size: int, tokenizer: AutoTokenizer) -> List[str]:
     dataset = load_dataset("cais/mmlu", "all", split=f"test[:{dataset_size}]")
     texts = []
     for sample in dataset:
+        prompt = sample["question"] + "\nChoices:" + " ".join(sample["choices"]) + "\nWithout any reasoning give me an answer from one of the choices."
         messages = [
-            {"role": "user", "content": sample["question"] + "\nChoices:" + " ".join(sample["choices"])}
+            {"role": "user", "content": prompt}
         ]
         if tokenizer.chat_template is None:
-            texts.append(sample["instruction"] + " " + sample["input"] + "Answer:\n")
+            texts.append(prompt)
         else:
             texts.append(
                 tokenizer.apply_chat_template(
@@ -87,3 +90,21 @@ def get_device():
         return _DEVICE
     _DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     return _DEVICE
+
+
+def get_profiler(enabled: bool):
+    if enabled:
+        return profile(
+            activities=[ProfilerActivity.CPU]
+        )
+    else:
+        return nullcontext()
+
+def get_record_function(enabled: bool):
+    if enabled:
+        return torch.profiler.record_function
+    else:
+        @contextmanager
+        def dummy_record_function(_):
+            yield
+        return dummy_record_function

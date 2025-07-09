@@ -3,7 +3,7 @@ import sys
 
 from tabulate import tabulate
 
-from src.batcher import Stats
+from src.stats import Stats
 
 
 def main():
@@ -39,11 +39,6 @@ def main():
     data = [
         ["Run time (s)", stats1.run_time, stats2.run_time],
         ["Prefill tokens (tok)", stats1.prefill_tokens, stats2.prefill_tokens],
-        [
-            "Prefill speed (tok/s)",
-            stats1.prefill_tokens / stats1.run_time,
-            stats2.prefill_tokens / stats2.run_time,
-        ],
         ["Generated tokens (tok)", stats1.generated_tokens, stats2.generated_tokens],
         [
             "Generation speed (tok/s)",

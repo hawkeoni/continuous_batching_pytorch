@@ -9,3 +9,4 @@ class BenchmarkConfig(BaseModel):
     max_new_tokens: int
     dataset_size: int
     fraction: float
+    do_profile: bool = False
