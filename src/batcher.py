@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 import torch
 from pydantic import BaseModel
@@ -99,7 +99,7 @@ class SynchronousBatcher(Batcher):
             self.stats.generated_tokens += (
                 (generated_ids != self.tokenizer.pad_token_id).sum().item()
             )
-            generated_texts += self.tokenizer.batch_decode(generated_ids)
+            generated_texts += self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         return generated_texts
 
 
@@ -133,8 +133,9 @@ class ContinuousBatcher(Batcher):
         pbar = tqdm(total=len(texts), mininterval=1)
         while idx < len(texts) or batch.texts_decoding or batch.texts_waiting:
             if (
-                len(batch.texts_decoding) < batch_size and 
-                len(batch.texts_waiting) >= len(batch.texts_decoding) * self.config.fraction
+                len(batch.texts_decoding) < batch_size
+                and len(batch.texts_waiting)
+                >= len(batch.texts_decoding) * self.config.fraction
             ):
                 self._update_prefill(batch)
             self._step(batch)
@@ -147,6 +148,8 @@ class ContinuousBatcher(Batcher):
                 idx += len(finished_samples)
                 pbar.update(len(finished_samples))
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.stats.end_time = time.time()
         return results
 
@@ -160,8 +163,8 @@ class ContinuousBatcher(Batcher):
         inputs = self.tokenizer(
             batch.texts_waiting,
             return_tensors="pt",
-            padding="longest",
-            # padding="max_length",
+            # padding="longest",
+            padding="max_length",
             max_length=self.config.max_prefix_len,
             truncation="longest_first",
         )
@@ -197,12 +200,17 @@ class ContinuousBatcher(Batcher):
             self._expand_batch(batch, prefill_data, inputs)
 
     def _expand_batch(
-        self, batch: _Batch, prefill_data: CausalLMOutputWithCrossAttentions, inputs: Dict[str, torch.Tensor]
+        self,
+        batch: _Batch,
+        prefill_data: CausalLMOutputWithCrossAttentions,
+        inputs: Dict[str, torch.Tensor],
     ):
         batch.texts_decoding += batch.texts_waiting
         batch.texts_waiting = []
 
-        seqlen_to_add = batch.past_key_values.key_cache[0].size(2) - prefill_data.past_key_values.key_cache[0].size(2)
+        seqlen_to_add = batch.past_key_values.key_cache[0].size(
+            2
+        ) - prefill_data.past_key_values.key_cache[0].size(2)
         input_ids = prefill_data.logits[:, -1].argmax(dim=1, keepdim=True)
         batch.input_ids = torch.cat((batch.input_ids, input_ids), dim=0)
         batch.generated_tokens += input_ids.tolist()
@@ -213,8 +221,18 @@ class ContinuousBatcher(Batcher):
 
         batch_seqlen = batch.attention_mask.size(1)
         inputs_seqlen = inputs["input_ids"].size(1)
-        input_paddings = torch.zeros((inputs["input_ids"].size(0), batch_seqlen - inputs_seqlen - 1), device=get_device())
-        input_attn_mask = torch.cat((input_paddings, inputs["attention_mask"], torch.ones_like(inputs["attention_mask"][:, 0:1])), dim=1)
+        input_paddings = torch.zeros(
+            (inputs["input_ids"].size(0), batch_seqlen - inputs_seqlen - 1),
+            device=get_device(),
+        )
+        input_attn_mask = torch.cat(
+            (
+                input_paddings,
+                inputs["attention_mask"],
+                torch.ones_like(inputs["attention_mask"][:, 0:1]),
+            ),
+            dim=1,
+        )
         batch.attention_mask = torch.cat((batch.attention_mask, input_attn_mask), dim=0)
         attention_mask = batch.attention_mask
         position_ids = attention_mask.long().cumsum(-1) - 1
@@ -224,32 +242,32 @@ class ContinuousBatcher(Batcher):
         # batch, n_heads, seq_len, d_head
         pkv = prefill_data.past_key_values.key_cache[0]
         padding_tensor = torch.zeros(
-            pkv.size(0), pkv.size(1), seqlen_to_add, pkv.size(3), dtype=self.dtype, device=get_device()
+            pkv.size(0),
+            pkv.size(1),
+            seqlen_to_add,
+            pkv.size(3),
+            dtype=self.dtype,
+            device=get_device(),
         )
 
         for layer in range(self.model.config.num_hidden_layers):
             # key
             padded_tensor = torch.cat(
-                (padding_tensor, prefill_data.past_key_values.key_cache[layer]),
-                dim=2
+                (padding_tensor, prefill_data.past_key_values.key_cache[layer]), dim=2
             )
             batch.past_key_values.key_cache[layer] = torch.cat(
-                (batch.past_key_values.key_cache[layer], padded_tensor),
-                dim=0
+                (batch.past_key_values.key_cache[layer], padded_tensor), dim=0
             )
 
             # value
             padded_tensor = torch.cat(
-                (padding_tensor, prefill_data.past_key_values.value_cache[layer]),
-                dim=2
+                (padding_tensor, prefill_data.past_key_values.value_cache[layer]), dim=2
             )
             batch.past_key_values.value_cache[layer] = torch.cat(
-                (batch.past_key_values.value_cache[layer], padded_tensor),
-                dim=0
+                (batch.past_key_values.value_cache[layer], padded_tensor), dim=0
             )
 
     def _step(self, batch: _Batch):
-        # iids = batch.input_ids.clone()
         step_data: CausalLMOutputWithCrossAttentions = self.model(
             input_ids=batch.input_ids,
             attention_mask=batch.attention_mask,
@@ -259,15 +277,6 @@ class ContinuousBatcher(Batcher):
         )
         self.stats.generated_tokens += step_data.logits.size(0)
         batch.input_ids = step_data.logits[:, 0].argmax(dim=1, keepdim=True)
-        # if iids.view(-1).tolist() == [10601, 311, 1249]:
-        #     input_ids = torch.cat((self.tokenizer(batch.texts_decoding[-1], return_tensors="pt").input_ids, torch.LongTensor([[1249]])), 1)
-        #     attention_mask = batch.attention_mask[1:2, -32:]
-        #     for layer in range(self.model.config.num_hidden_layers):
-        #         batch.past_key_values.key_cache[layer] = batch.past_key_values.key_cache[layer][2:3, :, -32:-1]
-        #         batch.past_key_values.value_cache[layer] = batch.past_key_values.value_cache[layer][2:3, :, -32:-1]
-        #     am = self.model(input_ids=input_ids, attention_mask=attention_mask).logits.argmax(-1)
-        #     print(am)
-        #     print()
 
         attention_mask = torch.cat(
             (batch.attention_mask, torch.ones_like(batch.attention_mask[:, 0:1])), dim=1
@@ -305,8 +314,14 @@ class ContinuousBatcher(Batcher):
         batch.position_ids = batch.position_ids.index_select(0, include_indices)
         batch.attention_mask = batch.attention_mask.index_select(0, include_indices)
         for layer in range(self.model.config.num_hidden_layers):
-            batch.past_key_values.key_cache[layer] = batch.past_key_values.key_cache[layer].index_select(0, include_indices)
-            batch.past_key_values.value_cache[layer] = batch.past_key_values.value_cache[layer].index_select(0, include_indices)
+            batch.past_key_values.key_cache[layer] = batch.past_key_values.key_cache[
+                layer
+            ].index_select(0, include_indices)
+            batch.past_key_values.value_cache[
+                layer
+            ] = batch.past_key_values.value_cache[layer].index_select(
+                0, include_indices
+            )
 
         batch.generated_tokens_counter = batch.generated_tokens_counter.index_select(
             0, include_indices
@@ -319,7 +334,7 @@ class ContinuousBatcher(Batcher):
             self.stats.sample_end_times[batch.text_ids[remove_index]] = end_time
             batch.texts_decoding.pop(remove_index)
             text_ids.append(batch.text_ids.pop(remove_index))
-            suffix = self.tokenizer.decode(batch.generated_tokens.pop(remove_index))
+            suffix = self.tokenizer.decode(batch.generated_tokens.pop(remove_index), skip_special_tokens=True)
             result.append(suffix)
 
         return text_ids, result

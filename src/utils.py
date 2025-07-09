@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 
 def get_model_and_tokenizer(model_name: str):
     logger.info("Start loading the model & tokenizer")
+    cuda_kwargs = {}
+    if torch.cuda.is_available():
+        cuda_kwargs = {"attn_implementation": "flash_attention_2"}
     model = (
         AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
+            **cuda_kwargs,
         )
         .eval()
         .to(get_device())
@@ -37,12 +41,18 @@ def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]
         else:
             texts.append(
                 tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
                 )
             )
     return texts
 
+
 _DEVICE = None
+
+
 def get_device():
     global _DEVICE
     if _DEVICE is not None:

@@ -2,7 +2,7 @@
     "model": "Qwen/Qwen3-0.6B",
     "continuous_batching": true,
     "batch_size": 3,
-    "max_prefix_len": 512,
+    "max_prefix_len": 128,
     "max_new_tokens": 64,
     "dataset_size": 15,
     "fraction": 0.5
