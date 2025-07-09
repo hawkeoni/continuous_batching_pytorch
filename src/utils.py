@@ -1,3 +1,4 @@
+import random
 import logging
 from typing import List
 
@@ -29,7 +30,7 @@ def get_model_and_tokenizer(model_name: str):
     return model, tokenizer
 
 
-def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]:
+def get_alpaca_dataset(dataset_size: int, tokenizer: AutoTokenizer) -> List[str]:
     dataset = load_dataset("tatsu-lab/alpaca", split=f"train[:{dataset_size}]")
     texts = []
     for sample in dataset:
@@ -50,8 +51,35 @@ def get_alpaca_dataset(dataset_size: str, tokenizer: AutoTokenizer) -> List[str]
     return texts
 
 
-_DEVICE = None
+def get_mmlu_dataset(dataset_size: int, tokenizer: AutoTokenizer) -> List[str]:
+    dataset = load_dataset("cais/mmlu", "all", split=f"test[:{dataset_size}]")
+    texts = []
+    for sample in dataset:
+        messages = [
+            {"role": "user", "content": sample["question"] + "\nChoices:" + " ".join(sample["choices"])}
+        ]
+        if tokenizer.chat_template is None:
+            texts.append(sample["instruction"] + " " + sample["input"] + "Answer:\n")
+        else:
+            texts.append(
+                tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            )
+    return texts
 
+
+def get_benchmark_dataset(dataset_size: int, tokenizer: AutoTokenizer) -> List[str]:
+    random.seed(0)
+    texts = get_alpaca_dataset(dataset_size // 2, tokenizer) + get_mmlu_dataset(dataset_size // 2, tokenizer)
+    random.shuffle(texts)
+    return texts
+
+
+_DEVICE = None
 
 def get_device():
     global _DEVICE

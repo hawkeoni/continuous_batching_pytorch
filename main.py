@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.batcher import ContinuousBatcher, SynchronousBatcher
 from src.config import BenchmarkConfig
-from src.utils import get_alpaca_dataset
+from src.utils import get_benchmark_dataset
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +19,7 @@ def main(config_path: Path, output: Path):
     else:
         batcher = SynchronousBatcher(config)
 
-    dataset = get_alpaca_dataset(config.dataset_size, batcher.tokenizer)
+    dataset = get_benchmark_dataset(config.dataset_size, batcher.tokenizer)
     generations = batcher(dataset)
 
     stats = json.loads(batcher.stats.model_dump_json())
