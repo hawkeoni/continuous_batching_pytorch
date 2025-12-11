@@ -44,9 +44,12 @@ class SynchronousBatcher(Batcher):
         logger.info(f"Synchronous batching working on {num_batches} batches")
         generated_ids_global = []
         with self._profiler as prof:
+            # For each batch
             for batch_idx in tqdm(range(num_batches)):
+                # We take the batch
                 batch = texts[batch_idx * batch_size : (batch_idx + 1) * batch_size]
                 self.stats.sample_start_times += [time.time()] * len(batch)
+                # Tokenize inputs
                 inputs = self.tokenizer(
                     batch,
                     return_tensors="pt",
@@ -57,6 +60,7 @@ class SynchronousBatcher(Batcher):
                 inputs = inputs.to(get_device())
                 self.stats.prefill_tokens += inputs["attention_mask"].sum().item()
                 prefix_len = inputs["input_ids"].size(1)
+                # Generate on batch
                 with self._record_function(f"batch {batch_idx}"):
                     gens = self.model.generate(
                         **inputs,
@@ -71,6 +75,7 @@ class SynchronousBatcher(Batcher):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             self.stats.end_time = time.time()
+            # Dump text outputs
             generated_texts = []
             for generated_ids in generated_ids_global:
                 self.stats.generated_tokens += (
@@ -191,9 +196,9 @@ class ContinuousBatcher(Batcher):
         batch.texts_decoding += batch.texts_waiting
         batch.texts_waiting = []
 
-        seqlen_to_add = batch.past_key_values.key_cache[0].size(
+        seqlen_to_add = batch.past_key_values.layers[0].keys.size(
             2
-        ) - prefill_data.past_key_values.key_cache[0].size(2)
+        ) - prefill_data.past_key_values.layers[0].keys.size(2)
         input_ids = prefill_data.logits[:, -1].argmax(dim=1, keepdim=True)
         batch.input_ids = torch.cat((batch.input_ids, input_ids), dim=0)
         batch.generated_tokens += input_ids.tolist()
@@ -224,7 +229,7 @@ class ContinuousBatcher(Batcher):
         batch.position_ids = position_ids[:, -1].unsqueeze(1)
 
         # batch, n_heads, seq_len, d_head
-        pkv = prefill_data.past_key_values.key_cache[0]
+        pkv = prefill_data.past_key_values.layers[0].keys
         padding_tensor = torch.zeros(
             pkv.size(0),
             pkv.size(1),
@@ -238,18 +243,18 @@ class ContinuousBatcher(Batcher):
             for layer in range(self.model.config.num_hidden_layers):
                 # key
                 padded_tensor = torch.cat(
-                    (padding_tensor, prefill_data.past_key_values.key_cache[layer]), dim=2
+                    (padding_tensor, prefill_data.past_key_values.layers[layer].keys), dim=2
                 )
-                batch.past_key_values.key_cache[layer] = torch.cat(
-                    (batch.past_key_values.key_cache[layer], padded_tensor), dim=0
+                batch.past_key_values.layers[layer].keys = torch.cat(
+                    (batch.past_key_values.layers[layer].keys, padded_tensor), dim=0
                 )
 
                 # value
                 padded_tensor = torch.cat(
-                    (padding_tensor, prefill_data.past_key_values.value_cache[layer]), dim=2
+                    (padding_tensor, prefill_data.past_key_values.layers[layer].values), dim=2
                 )
-                batch.past_key_values.value_cache[layer] = torch.cat(
-                    (batch.past_key_values.value_cache[layer], padded_tensor), dim=0
+                batch.past_key_values.layers[layer].values = torch.cat(
+                    (batch.past_key_values.layers[layer].values, padded_tensor), dim=0
                 )
 
     def _step(self, batch: _Batch):
@@ -302,14 +307,8 @@ class ContinuousBatcher(Batcher):
             batch.position_ids = batch.position_ids.index_select(0, include_indices)
             batch.attention_mask = batch.attention_mask.index_select(0, include_indices)
             for layer in range(self.model.config.num_hidden_layers):
-                batch.past_key_values.key_cache[layer] = batch.past_key_values.key_cache[
-                    layer
-                ].index_select(0, include_indices)
-                batch.past_key_values.value_cache[
-                    layer
-                ] = batch.past_key_values.value_cache[layer].index_select(
-                    0, include_indices
-                )
+                batch.past_key_values.layers[layer].keys = batch.past_key_values.layers[layer].keys.index_select(0, include_indices)
+                batch.past_key_values.layers[layer].values = batch.past_key_values.layers[layer].values.index_select(0, include_indices)
 
             batch.generated_tokens_counter = batch.generated_tokens_counter.index_select(
                 0, include_indices
